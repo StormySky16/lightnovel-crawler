@@ -15,6 +15,25 @@ logger = logging.getLogger(__name__)
 
 
 class NoveLightCrawler(Crawler):
+
+    def get_soup(self, url, *args, **kwargs):
+        # If this is an AJAX chapter endpoint, fetch with headers and parse JSON
+        if re.match(r"https://novelight.net/book/ajax/read-chapter/\d+", url):
+            import requests
+            from bs4 import BeautifulSoup
+            headers = {
+                "Accept": "*/*",
+                "Referer": self.novel_url,
+                "X-Requested-With": "XMLHttpRequest",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            }
+            resp = requests.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            html_content = data.get("content", "")
+            return BeautifulSoup(html_content, "html.parser")
+        # Otherwise, use the default behavior
+        return super().get_soup(url, *args, **kwargs)
     base_url = "https://novelight.net/"
 
     def initialize(self) -> None:
@@ -101,11 +120,18 @@ class NoveLightCrawler(Crawler):
                 if a.select_one(".chapter-info .cost"):
                     encountered_paid_chapter = True
                 else:
+                    # Extract chapter ID from href
+                    href = a["href"]
+                    match = re.search(r"/book/chapter/(\d+)", href)
+                    if not match:
+                        continue
+                    chapter_id = match.group(1)
+                    ajax_url = f"https://novelight.net/book/ajax/read-chapter/{chapter_id}"
                     self.chapters.append(
                         Chapter(
                             id=len(self.chapters) + 1,
                             title=a.select_one(".title").text.strip(),
-                            url=self.absolute_url(a["href"]),
+                            url=ajax_url,
                         )
                     )
             bar.update()
@@ -118,6 +144,8 @@ class NoveLightCrawler(Crawler):
     def download_chapter_body(self, chapter: Chapter):
         soup = self.get_soup(chapter.url)
         contents = soup.select_one(".chapter-text")
+        if contents is None:
+            logger.error(f"No .chapter-text found in chapter {chapter.url}")
+            return None
         self.cleaner.clean_contents(contents)
-
         return str(contents)
